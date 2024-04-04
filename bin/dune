@@ -1,0 +1,5 @@
+(executable
+ (public_name ocaml_compiler)
+ (name main)
+ (libraries ocaml_compiler core)
+ (preprocess (pps ppx_deriving.show)))
