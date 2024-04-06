@@ -1,14 +1,19 @@
-open Core
+open Base
 
 let () =
-  let _ = print_endline "Hello World" in
+  let _ = Stdio.print_endline "Hello World" in
   match Ocaml_compiler.Lexer.lexInputFile "./test_file" with
   | Error x ->
-    let _ = print_endline (fst x |> Ocaml_compiler.Lexer.show_token_type) in
-    print_endline @@ snd x
+    let _ = Stdio.print_endline (fst x |> Ocaml_compiler.Lexer.show_token_type) in
+    Stdio.print_endline @@ snd x
   | Ok x ->
-    x
-    |> List.map ~f:Ocaml_compiler.Lexer.show_token_type
-    |> List.map ~f:print_endline
-    |> ignore
+    let parsed = Ocaml_compiler.Parser.parse x in
+    (match parsed with
+     | Error e -> Stdio.print_endline e
+     | Ok (Root x) ->
+       x
+       |> List.map ~f:Ocaml_compiler.Parser.show_ast_node
+       |> List.map ~f:Stdio.print_endline
+       |> ignore
+     | _ -> Stdio.print_endline "Invalid")
 ;;

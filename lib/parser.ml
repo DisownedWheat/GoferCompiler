@@ -1,3 +1,5 @@
+open Base
+
 type root = ast_node list
 
 and go_import =
@@ -55,26 +57,94 @@ and ast_node =
   | FuncDef of function_def
   | Let of let_definition
   | Block of logic_block
+  | NoOp
+[@@deriving show]
 
 type parse_delimiter =
-  | FuncDelim of (Lexer.token_type -> Lexer.token_type list -> ast_node -> bool)
+  | FuncDelim of (Lexer.token_type -> Lexer.token_type list -> bool)
   | NoDelimiter
 
 let ( ||> ) (a, b) f = f a b
 
-let rec parse_tree tokens ast =
-  match tokens with
-  | [] -> Ok (tokens, ast)
-  | head :: _ ->
-    (match head with
-     | Lexer.EOF _ -> Ok (tokens, ast)
-     | _ -> Ok (tokens, ast))
+let filter_noop x =
+  match x with
+  | NoOp -> false
+  | _ -> true
+;;
 
-and recursive_parse tokens ast =
+let debug_print_tokens tokens =
+  List.map ~f:Lexer.show_token_type tokens |> List.map ~f:Stdio.print_endline
+;;
+
+(* |> fun _ -> Stdio.print_endline "Done" *)
+
+let rec parse_import tail' =
+  let _ = Stdio.print_endline "Parsing import" in
+  let check_import_type tokens =
+    match tokens with
+    | Lexer.String x :: Lexer.NewLine _ :: tail ->
+      Ok (tail, GoImport { module_name = x.value; alias = None })
+    | Lexer.Identifier x :: Lexer.String y :: Lexer.NewLine _ :: tail ->
+      Ok (tail, GoImport { module_name = x.value; alias = Some y.value })
+    | Lexer.Identifier x :: Lexer.NewLine _ :: tail ->
+      Ok (tail, Import { module_name = x.value })
+    | _ -> Error "Invalid import line"
+  in
+  match check_import_type tail' with
+  | Error e -> Error e
+  | Ok x -> Ok x
+
+and match_token _ head tail =
+  match head with
+  | Lexer.EOF _ -> Ok (tail, NoOp)
+  | Lexer.Import _ -> parse_import tail
+  | Lexer.NewLine _ -> Ok (tail, NoOp)
+  | Lexer.LBrace _ ->
+    let delim =
+      FuncDelim
+        (fun a _ ->
+          match a with
+          | Lexer.RBrace _ -> true
+          | _ -> false)
+    in
+    (match rec_parse_tree delim tail [] with
+     | Ok (remaining, children) -> Ok (remaining, Block children)
+     | Error e -> Error e)
+  | _ -> Ok (tail, NoOp)
+
+and parse_tree delimiter tokens =
+  let _ = Stdio.print_endline "parsing tree" in
+  let curried_parse = match_token delimiter in
+  match delimiter, tokens with
+  | _, [] -> Ok (tokens, NoOp)
+  | FuncDelim f, head :: tail when not (f head tokens) -> curried_parse head tail
+  | NoDelimiter, head :: tail -> curried_parse head tail
+  | _, _ :: tail -> Ok (tail, NoOp)
+
+and rec_parse_tree delimiter tokens children =
+  match delimiter, tokens with
+  | FuncDelim f, head :: _ when not (f head tokens) ->
+    (match parse_tree delimiter tokens with
+     | Ok (remaining, child) -> rec_parse_tree delimiter remaining (child :: children)
+     | Error e -> Error e)
+  | NoDelimiter, _ ->
+    (match parse_tree delimiter tokens with
+     | Ok (remaining, child) -> rec_parse_tree delimiter remaining (child :: children)
+     | Error e -> Error e)
+  | _, _ -> Ok (tokens, List.filter ~f:filter_noop children |> List.rev)
+
+and recursive_parse tokens ast_list =
+  let _ = debug_print_tokens tokens in
   match tokens with
-  | [] -> Ok (tokens, ast)
+  | [] -> Ok (tokens, List.filter ~f:filter_noop ast_list |> List.rev)
   | _ ->
-    (match parse_tree tokens ast with
-     | Ok x -> x ||> recursive_parse
+    (match parse_tree NoDelimiter tokens with
+     | Ok (tokens, child) -> recursive_parse tokens (child :: ast_list)
      | Error y -> Error y)
+;;
+
+let parse tokens =
+  match recursive_parse tokens [] with
+  | Error e -> Error e
+  | Ok (_, ast) -> Ok (Root ast)
 ;;
