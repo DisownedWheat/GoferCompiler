@@ -57,6 +57,7 @@ and ast_node =
   | FuncDef of function_def
   | Let of let_definition
   | Block of logic_block
+  | ParenExpression of ast_node
   | NoOp
 [@@deriving show]
 
@@ -94,11 +95,24 @@ let rec parse_import tail' =
   | Error e -> Error e
   | Ok x -> Ok x
 
+and parse_paren_expression tail' =
+  let delim =
+    FuncDelim
+      (fun a _ ->
+        match a with
+        | Lexer.RParen _ -> true
+        | _ -> false)
+  in
+  match parse_tree delim tail' with
+  | Ok (remaining, children) -> Ok (remaining, ParenExpression children)
+  | Error e -> Error e
+
 and match_token _ head tail =
   match head with
   | Lexer.EOF _ -> Ok (tail, NoOp)
   | Lexer.Import _ -> parse_import tail
   | Lexer.NewLine _ -> Ok (tail, NoOp)
+  | Lexer.LParen _ -> parse_paren_expression tail
   | Lexer.LBrace _ ->
     let delim =
       FuncDelim
