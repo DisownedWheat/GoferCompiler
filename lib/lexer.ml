@@ -51,6 +51,7 @@ type token_type =
   | And of token
   | Or of token
   | Pipe of token
+  | Range of token
   | Comment of token
   | ReturnType of token
   | ErrorToken of token
@@ -227,6 +228,10 @@ let parseText state char =
          ; column = state.column + String.length token.value + 2
          }
      | _ -> Ok { state with buffer = char :: state.buffer })
+  | Some '.' ->
+    (match char with
+     | '.' -> Ok (state |+> (Range (build_token state ".."), 2))
+     | _ -> state |+> (PropertyAccess (build_token state "."), 1) |> match_char char)
   | Some '=' ->
     (match char with
      | '=' -> Ok (state |+> (Equality (build_token state "=="), 2))

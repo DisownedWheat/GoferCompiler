@@ -113,7 +113,6 @@ and match_token _ head tail =
   | _ -> Ok (tail, NoOp)
 
 and parse_tree delimiter tokens =
-  let _ = Stdio.print_endline "parsing tree" in
   let curried_parse = match_token delimiter in
   match delimiter, tokens with
   | _, [] -> Ok (tokens, NoOp)
