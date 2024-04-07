@@ -58,6 +58,7 @@ and ast_node =
   | Let of let_definition
   | Block of logic_block
   | ParenExpression of ast_node
+  | ArrayLiteral of ast_node list
   | NoOp
 [@@deriving show]
 
@@ -77,7 +78,19 @@ let debug_print_tokens tokens =
   List.map ~f:Lexer.show_token_type tokens |> List.map ~f:Stdio.print_endline
 ;;
 
+let unexpected_token_error token =
+  Error (Printf.sprintf "Unexpected token: %s" (Lexer.show_token_type token))
+;;
+
 (* |> fun _ -> Stdio.print_endline "Done" *)
+
+let rec ignore_whitespace ignore_newlines tokens =
+  match tokens, ignore_newlines with
+  | [], _ -> tokens
+  | Lexer.NewLine _ :: tail, true -> ignore_whitespace ignore_newlines tail
+  | Lexer.Whitespace _ :: tail, _ -> ignore_whitespace ignore_newlines tail
+  | _ -> tokens
+;;
 
 let rec parse_import tail' =
   let _ = Stdio.print_endline "Parsing import" in
@@ -107,24 +120,39 @@ and parse_paren_expression tail' =
   | Ok (remaining, children) -> Ok (remaining, ParenExpression children)
   | Error e -> Error e
 
+and parse_brace_expression tail =
+  let delim =
+    FuncDelim
+      (fun a _ ->
+        match a with
+        | Lexer.RBrace _ -> true
+        | _ -> false)
+  in
+  match rec_parse_tree delim tail [] with
+  | Ok (remaining, children) -> Ok (remaining, Block children)
+  | Error e -> Error e
+
+and parse_array_literal tail =
+  let delim =
+    FuncDelim
+      (fun a _ ->
+        match a with
+        | Lexer.RBracket _ -> true
+        | _ -> false)
+  in
+  match rec_parse_tree delim tail [] with
+  | Ok (remaining, children) -> Ok (remaining, ArrayLiteral children)
+  | Error e -> Error e
+
 and match_token _ head tail =
   match head with
   | Lexer.EOF _ -> Ok (tail, NoOp)
   | Lexer.Import _ -> parse_import tail
   | Lexer.NewLine _ -> Ok (tail, NoOp)
+  | Lexer.LBracket _ -> parse_array_literal tail
   | Lexer.LParen _ -> parse_paren_expression tail
-  | Lexer.LBrace _ ->
-    let delim =
-      FuncDelim
-        (fun a _ ->
-          match a with
-          | Lexer.RBrace _ -> true
-          | _ -> false)
-    in
-    (match rec_parse_tree delim tail [] with
-     | Ok (remaining, children) -> Ok (remaining, Block children)
-     | Error e -> Error e)
-  | _ -> Ok (tail, NoOp)
+  | Lexer.LBrace _ -> parse_brace_expression tail
+  | _ -> unexpected_token_error head
 
 and parse_tree delimiter tokens =
   let curried_parse = match_token delimiter in

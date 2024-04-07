@@ -51,6 +51,7 @@ type token_type =
   | And of token
   | Or of token
   | Pipe of token
+  | TypeSeparator of token
   | Range of token
   | Comment of token
   | ReturnType of token
@@ -246,25 +247,25 @@ let parseText state char =
      | '-' -> Ok (state |+> (Channel (build_token state "<-"), 2))
      | _ -> state |+> (LT (build_token state "<"), 1) |> match_char char)
   | Some '*' ->
-    (match Char.is_whitespace char with
-     | true -> state |+> (Operator (build_token_char state '*'), 1) |> match_char char
-     | false -> state |+> (Deref (build_token_char state '*'), 1) |> match_char char)
+    if Char.is_whitespace char
+    then state |+> (Operator (build_token_char state '*'), 1) |> match_char char
+    else state |+> (Deref (build_token_char state '*'), 1) |> match_char char
   | Some '>' ->
     (match char with
      | '=' -> Ok (state |+> (GTE (build_token state ">="), 2))
      | _ -> state |+> (GT (build_token state ">"), 1) |> match_char char)
   | Some '&' ->
-    (match Char.is_whitespace char with
-     | true -> Error (ErrorToken (build_token state "&"), "Invalid & character")
-     | false ->
-       (match char with
-        | '&' -> Ok (state |+> (And (build_token state "&&"), 2))
-        | _ -> state |+> (Pointer (build_token state "&"), 2) |> match_char char))
+    if Char.is_whitespace char
+    then Error (ErrorToken (build_token state "&"), "Invalid & character")
+    else (
+      match char with
+      | '&' -> Ok (state |+> (And (build_token state "&&"), 2))
+      | _ -> state |+> (Pointer (build_token state "&"), 2) |> match_char char)
   | Some '|' ->
     (match char with
      | '|' -> Ok (state |+> (Or (build_token state "||"), 2))
      | '>' -> Ok (state |+> (Pipe (build_token state "|>"), 2))
-     | _ -> Error (ErrorToken (build_token state "|"), "Invalid | character"))
+     | _ -> state |+> (TypeSeparator (build_token state "|"), 1) |> match_char char)
   | Some '/' ->
     (match char with
      | '/' -> Ok (state |+> (Comment (build_token state "//"), 2))

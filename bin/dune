@@ -1,5 +1,5 @@
 (executable
- (public_name ocaml_compiler)
+ (public_name gofer_compiler)
  (name main)
- (libraries ocaml_compiler core)
+ (libraries gofer_compiler core)
  (preprocess (pps ppx_deriving.show)))
