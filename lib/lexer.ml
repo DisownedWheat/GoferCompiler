@@ -32,13 +32,13 @@ type token_type =
   | RParen of token
   | Comma of token
   | Dot of token
-  | Whitespace of token
   | Pointer of token
   | Deref of token
   | Channel of token
+  | Append of token
   | PropertyAccess of token
   | NewLine of token
-  | Type of token
+  | TypeKeyword of token
   | Pub of token
   | Mut of token
   | Function of token
@@ -55,6 +55,7 @@ type token_type =
   | Range of token
   | Comment of token
   | ReturnType of token
+  | Whitespace of token
   | ErrorToken of token
 [@@deriving show]
 
@@ -107,7 +108,7 @@ let parse_current state =
          | "false" -> False token
          | "pub" -> Pub token
          | "go" -> Go token
-         | "type" -> Type token
+         | "type" -> TypeKeyword token
          | "fn" -> Function token
          | "mut" -> Mut token
          | "return" -> Return token
@@ -189,7 +190,6 @@ let match_char char state =
      | '[' -> Token (fun x -> LBracket x)
      | ']' -> Token (fun x -> RBracket x)
      | '@' -> Token (fun x -> PropertyAccess x)
-     | ':' -> Token (fun x -> Colon x)
      | '|' | '.' -> Char
      | _ -> Ignore (check_whitespace state char))
 ;;
@@ -266,6 +266,10 @@ let parseText state char =
      | '|' -> Ok (state |+> (Or (build_token state "||"), 2))
      | '>' -> Ok (state |+> (Pipe (build_token state "|>"), 2))
      | _ -> state |+> (TypeSeparator (build_token state "|"), 1) |> match_char char)
+  | Some ':' ->
+    (match char with
+     | ':' -> Ok (state |+> (Append (build_token state "::"), 2))
+     | _ -> state |+> (Colon (build_token state ":"), 1) |> match_char char)
   | Some '/' ->
     (match char with
      | '/' -> Ok (state |+> (Comment (build_token state "//"), 2))

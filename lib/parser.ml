@@ -26,6 +26,7 @@ and identifier_type =
 and type_declaration =
   { name : string
   ; module' : string option
+  ; pointer : bool
   }
 
 and let_definition =
@@ -59,6 +60,8 @@ and ast_node =
   | Block of logic_block
   | ParenExpression of ast_node
   | ArrayLiteral of ast_node list
+  | RecordType of identifier * record_definition
+  | RecordLiteral of record_declaration
   | NoOp
 [@@deriving show]
 
@@ -79,7 +82,11 @@ let debug_print_tokens tokens =
 ;;
 
 let unexpected_token_error token =
-  Error (Printf.sprintf "Unexpected token: %s" (Lexer.show_token_type token))
+  match token with
+  | Some token ->
+    let str = Printf.sprintf "Unexpected token: %s" (Lexer.show_token_type token) in
+    Error str
+  | None -> Error "Invalid token"
 ;;
 
 (* |> fun _ -> Stdio.print_endline "Done" *)
@@ -93,20 +100,14 @@ let rec ignore_whitespace ignore_newlines tokens =
 ;;
 
 let rec parse_import tail' =
-  let _ = Stdio.print_endline "Parsing import" in
-  let check_import_type tokens =
-    match tokens with
-    | Lexer.String x :: Lexer.NewLine _ :: tail ->
-      Ok (tail, GoImport { module_name = x.value; alias = None })
-    | Lexer.Identifier x :: Lexer.String y :: Lexer.NewLine _ :: tail ->
-      Ok (tail, GoImport { module_name = x.value; alias = Some y.value })
-    | Lexer.Identifier x :: Lexer.NewLine _ :: tail ->
-      Ok (tail, Import { module_name = x.value })
-    | _ -> Error "Invalid import line"
-  in
-  match check_import_type tail' with
-  | Error e -> Error e
-  | Ok x -> Ok x
+  match tail' with
+  | Lexer.String x :: Lexer.NewLine _ :: tail ->
+    Ok (tail, GoImport { module_name = x.value; alias = None })
+  | Lexer.Identifier x :: Lexer.String y :: Lexer.NewLine _ :: tail ->
+    Ok (tail, GoImport { module_name = x.value; alias = Some y.value })
+  | Lexer.Identifier x :: Lexer.NewLine _ :: tail ->
+    Ok (tail, Import { module_name = x.value })
+  | _ -> Error "Invalid import line"
 
 and parse_paren_expression tail' =
   let delim =
@@ -132,6 +133,40 @@ and parse_brace_expression tail =
   | Ok (remaining, children) -> Ok (remaining, Block children)
   | Error e -> Error e
 
+and parse_record tail properties =
+  match ignore_whitespace true tail with
+  | [] -> Ok (tail, properties)
+  | Lexer.RBrace _ :: _ -> Ok (tail, properties)
+  | Lexer.Identifier x :: Lexer.Colon _ :: head :: remaining ->
+    (match match_token head remaining with
+     | Ok (leftover, y) -> parse_record leftover ((x.value, y) :: properties)
+     | Error e -> Error e)
+  | _ -> unexpected_token_error @@ List.hd tail
+
+and parse_record_type tail properties =
+  match ignore_whitespace true tail with
+  | [] -> Ok (tail, properties)
+  | Lexer.RBrace _ :: remaining -> Ok (remaining, properties)
+  | Lexer.Identifier _ :: Lexer.Colon _ :: remaining ->
+    (match parse_type_literal remaining with
+     | Ok (remaining_tokens, _) -> parse_record_type remaining_tokens []
+     | Error e -> Error e)
+  | _ -> Error "parse_record_type Not implemented yet"
+
+and parse_type_literal tail =
+  match tail with
+  | Lexer.Identifier x :: Lexer.Dot _ :: Lexer.Identifier y :: tail ->
+    Ok (tail, { name = x.value; module' = Some y.value; pointer = false })
+  | _ -> Error "parse_type_literal Not Implemented"
+
+and parse_type_dec ident tail =
+  match ignore_whitespace true tail with
+  | Lexer.LBrace _ :: new_tail ->
+    (match parse_record_type new_tail [] with
+     | Ok (remaining, props) -> Ok (remaining, RecordType (ident, { fields = props }))
+     | Error e -> Error e)
+  | _ -> Error "parse_type_dec Not Implemented"
+
 and parse_array_literal tail =
   let delim =
     FuncDelim
@@ -144,22 +179,36 @@ and parse_array_literal tail =
   | Ok (remaining, children) -> Ok (remaining, ArrayLiteral children)
   | Error e -> Error e
 
-and match_token _ head tail =
+and match_token head tail =
   match head with
   | Lexer.EOF _ -> Ok (tail, NoOp)
-  | Lexer.Import _ -> parse_import tail
+  | Lexer.Import _ ->
+    (match parse_import tail with
+     | Ok (x, y) -> Ok (x, y)
+     | Error e -> Error e)
   | Lexer.NewLine _ -> Ok (tail, NoOp)
-  | Lexer.LBracket _ -> parse_array_literal tail
+  | Lexer.LBracket _ ->
+    (match parse_array_literal tail with
+     | Ok (remaining, node) -> Ok (remaining, node)
+     | Error e -> Error e)
   | Lexer.LParen _ -> parse_paren_expression tail
-  | Lexer.LBrace _ -> parse_brace_expression tail
-  | _ -> unexpected_token_error head
+  | Lexer.LBrace _ ->
+    (match ignore_whitespace true tail with
+     | Lexer.Identifier _ :: Lexer.Colon _ :: _ ->
+       (match parse_record tail [] with
+        | _ -> Ok (tail, NoOp))
+     | _ -> Ok (tail, NoOp))
+  | Lexer.TypeKeyword _ ->
+    (match ignore_whitespace true tail with
+     | Lexer.Identifier x :: tail -> parse_type_dec { name = x.value } tail
+     | _ -> unexpected_token_error @@ Some head)
+  | _ -> unexpected_token_error @@ Some head
 
 and parse_tree delimiter tokens =
-  let curried_parse = match_token delimiter in
   match delimiter, tokens with
   | _, [] -> Ok (tokens, NoOp)
-  | FuncDelim f, head :: tail when not (f head tokens) -> curried_parse head tail
-  | NoDelimiter, head :: tail -> curried_parse head tail
+  | FuncDelim f, head :: tail when not (f head tokens) -> match_token head tail
+  | NoDelimiter, head :: tail -> match_token head tail
   | _, _ :: tail -> Ok (tail, NoOp)
 
 and rec_parse_tree delimiter tokens children =
@@ -172,7 +221,9 @@ and rec_parse_tree delimiter tokens children =
     (match parse_tree delimiter tokens with
      | Ok (remaining, child) -> rec_parse_tree delimiter remaining (child :: children)
      | Error e -> Error e)
-  | _, _ -> Ok (tokens, List.filter ~f:filter_noop children |> List.rev)
+  | _, _ ->
+    let filtered = List.filter ~f:filter_noop children |> List.rev in
+    Ok (tokens, filtered)
 
 and recursive_parse tokens ast_list =
   let _ = debug_print_tokens tokens in
