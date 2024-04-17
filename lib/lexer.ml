@@ -185,7 +185,7 @@ let match_char char state =
      | '[' -> Token (fun x -> LBracket x)
      | ']' -> Token (fun x -> RBracket x)
      | '@' -> Token (fun x -> PropertyAccess x)
-     | '|' | '.' -> Char
+     | '|' | '.' | ':' | '/' -> Char
      | _ -> Ignore (check_whitespace state char))
 ;;
 
