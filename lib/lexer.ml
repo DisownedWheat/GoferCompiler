@@ -153,12 +153,7 @@ let check_whitespace state char =
     ; column = 1
     }
   | ' ', false -> { new_state with column = new_state.column + 1 }
-  | '\t', false ->
-    { new_state with
-      tokens = token_func new_state @@ Whitespace (build_token_char new_state char)
-    ; buffer = append_buffer_func new_state
-    ; column = new_state.column + 4
-    }
+  | '\t', false -> { new_state with column = new_state.column + 4 }
   | _ -> { state with buffer = char :: state.buffer }
 ;;
 
