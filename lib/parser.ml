@@ -10,20 +10,30 @@ and go_import =
 
 and logic_block = ast_node list [@@deriving show]
 and gofer_import = { module_name : string } [@@deriving show]
-and record_field = string * type_declaration [@@deriving show]
+and record_field = identifier * type_declaration [@@deriving show]
 and record_definition = { fields : record_field list } [@@deriving show]
 and record_literal = (string * ast_node) list [@@deriving show]
-and identifier = { name : string } [@@deriving show]
+
+and identifier =
+  { name : string
+  ; mutable' : bool
+  ; public : bool
+  }
+[@@deriving show]
 
 and typed_identifier =
   { name : string
   ; type' : type_declaration
+  ; mutable' : bool
+  ; public : bool
   }
 [@@deriving show]
 
-and identifier_type =
+and let_identifier_type =
   | Identifier of identifier
   | TypedIdentifier of typed_identifier
+  | ArrayDestructure of identifier list
+  | RecordDestructure of identifier list
 [@@deriving show]
 
 and type_declaration =
@@ -31,13 +41,11 @@ and type_declaration =
   ; module' : string option
   ; pointer : bool
   ; slice : bool
-  ; mutable' : bool
-  ; public : bool
   }
 [@@deriving show]
 
 and let_definition =
-  { left : identifier_type
+  { left : let_identifier_type
   ; right : ast_node
   }
 [@@deriving show]
@@ -214,26 +222,36 @@ and parse_record_type tail properties =
       else unexpected_token_error "Invalid comma when parsing record type" @@ List.hd tail
     | Lexer.RBrace _ :: remaining -> Ok (remaining, List.rev properties)
     | Lexer.Pub _ :: Lexer.Identifier x :: Lexer.Colon _ :: remaining ->
-      (match parse_type_literal ~public:true @@ ignore_whitespace remaining with
+      (match parse_type_literal @@ ignore_whitespace remaining with
        | Ok (remaining_tokens, t) ->
-         parse' false remaining_tokens ((x.value, t) :: properties)
+         parse'
+           false
+           remaining_tokens
+           (({ name = x.value; mutable' = false; public = true }, t) :: properties)
        | Error e -> Error e)
     | Lexer.Pub _ :: Lexer.Mut _ :: Lexer.Identifier x :: Lexer.Colon _ :: remaining ->
-      (match
-         parse_type_literal ~public:true ~mutable':true @@ ignore_whitespace remaining
-       with
+      (match parse_type_literal @@ ignore_whitespace remaining with
        | Ok (remaining_tokens, t) ->
-         parse' false remaining_tokens ((x.value, t) :: properties)
+         parse'
+           false
+           remaining_tokens
+           (({ name = x.value; mutable' = true; public = true }, t) :: properties)
        | Error e -> Error e)
     | Lexer.Mut _ :: Lexer.Identifier x :: Lexer.Colon _ :: remaining ->
-      (match parse_type_literal ~mutable':true @@ ignore_whitespace remaining with
+      (match parse_type_literal @@ ignore_whitespace remaining with
        | Ok (remaining_tokens, t) ->
-         parse' false remaining_tokens ((x.value, t) :: properties)
+         parse'
+           false
+           remaining_tokens
+           (({ name = x.value; public = false; mutable' = true }, t) :: properties)
        | Error e -> Error e)
     | Lexer.Identifier x :: Lexer.Colon _ :: remaining ->
       (match parse_type_literal @@ ignore_whitespace remaining with
        | Ok (remaining_tokens, t) ->
-         parse' false remaining_tokens ((x.value, t) :: properties)
+         parse'
+           false
+           remaining_tokens
+           (({ name = x.value; public = false; mutable' = false }, t) :: properties)
        | Error e -> Error e)
     | _ ->
       unexpected_token_error "Invalid token when parsing record type"
@@ -242,7 +260,7 @@ and parse_record_type tail properties =
   in
   parse' false tail properties
 
-and parse_type_literal ?(public = false) ?(mutable' = false) tail =
+and parse_type_literal tail =
   let is_slice, tail' =
     match tail with
     | Lexer.LBracket _ :: Lexer.RBracket _ :: tail' -> true, tail'
@@ -257,23 +275,10 @@ and parse_type_literal ?(public = false) ?(mutable' = false) tail =
   | Lexer.Identifier x :: Lexer.Dot _ :: Lexer.Identifier y :: tail ->
     Ok
       ( tail
-      , { name = x.value
-        ; module' = Some y.value
-        ; pointer = is_pointer
-        ; slice = is_slice
-        ; mutable'
-        ; public
-        } )
+      , { name = x.value; module' = Some y.value; pointer = is_pointer; slice = is_slice }
+      )
   | Lexer.Identifier x :: tail ->
-    Ok
-      ( tail
-      , { name = x.value
-        ; module' = None
-        ; pointer = is_pointer
-        ; slice = is_slice
-        ; mutable'
-        ; public
-        } )
+    Ok (tail, { name = x.value; module' = None; pointer = is_pointer; slice = is_slice })
   | _ -> unexpected_token_error "Invalid token when parsing type literal" @@ List.hd tail
 
 and parse_type_dec ident tail =
@@ -369,6 +374,53 @@ and wrap_pub tail =
      | Error e -> Error e)
   | _ -> Error "Invalid token when parsing pub"
 
+and parse_let_expression tail =
+  let rec parse_array_destructure tail' args =
+    match tail' with
+    | Lexer.Identifier x :: Lexer.Comma _ :: remaining ->
+      parse_array_destructure
+        remaining
+        ({ name = x.value; mutable' = false; public = false } :: args)
+    | Lexer.Identifier x :: Lexer.RBracket _ :: remaining ->
+      Ok
+        ( remaining
+        , ArrayDestructure ({ name = x.value; public = false; mutable' = false } :: args)
+        )
+    | _ -> unexpected_token_error "Invalid destructure" @@ List.hd tail'
+  in
+  let rec parse_record_destructre tail' args =
+    match tail with
+    | Lexer.Identifier x :: Lexer.Comma _ :: remaining ->
+      parse_record_destructre
+        remaining
+        ({ name = x.value; mutable' = false; public = false } :: args)
+    | Lexer.Identifier x :: Lexer.RBrace _ :: remaining ->
+      Ok
+        ( remaining
+        , RecordDestructure ({ name = x.value; public = false; mutable' = false } :: args)
+        )
+    | _ -> unexpected_token_error "Invalid destructure" @@ List.hd tail'
+  in
+  let rec parse_left ?(mutable' = false) ?(public = false) tail =
+    match tail with
+    | Lexer.LBrace _ :: tail -> parse_record_destructre tail []
+    | Lexer.LBracket _ :: tail -> parse_array_destructure tail []
+    | Lexer.Pub _ :: tail -> parse_left ~mutable' ~public:true tail
+    | Lexer.Mut _ :: tail -> parse_left ~mutable':true ~public tail
+    | Lexer.Identifier x :: Lexer.Colon _ :: tail ->
+      (match parse_type_literal tail with
+       | Ok (remaining, type') ->
+         Ok (remaining, TypedIdentifier { name = x.value; type'; mutable'; public })
+       | Error e -> Error e)
+    | Lexer.Identifier x :: Lexer.Assign _ :: remaining ->
+      Ok (remaining, Identifier { name = x.value; public; mutable' })
+      |> fun x ->
+      (match x with
+       | Ok (_, _) -> Error ""
+       | Error e -> Error e)
+  in
+  Error "Oh No"
+
 and match_token head tail =
   match head with
   | Lexer.EOF _ -> Ok (tail, NoOp)
@@ -398,6 +450,7 @@ and match_token head tail =
        parse_tree delim tail)
   | Lexer.Pub _ -> wrap_pub tail
   | Lexer.Function _ -> parse_function tail
+  | Lexer.Let _ -> parse_let_expression tail
   | Lexer.TypeKeyword _ ->
     (match ignore_whitespace tail with
      | Lexer.Identifier x :: Lexer.Assign _ :: tail -> parse_type_dec x.value @@ tail
