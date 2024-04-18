@@ -1,5 +1,5 @@
 (executable
  (public_name gofer_compiler)
- (name main)
+ (name gofer_compiler)
  (libraries gofer_compiler core)
  (preprocess (pps ppx_deriving.show)))
