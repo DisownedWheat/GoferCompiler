@@ -34,6 +34,7 @@ and let_identifier_type =
   | TypedIdentifier of typed_identifier
   | ArrayDestructure of identifier list
   | RecordDestructure of identifier list
+  | TupleDestructure of identifier list
 [@@deriving show]
 
 and type_declaration =
@@ -87,7 +88,7 @@ and ast_node =
 [@@deriving show]
 
 type parse_delimiter =
-  | FuncDelim of (Lexer.token_type -> Lexer.token_type list -> bool)
+  | FuncDelim of (Lexer.token_type list -> bool)
   | NoDelimiter
 
 let print_ast ast =
@@ -138,8 +139,6 @@ let unexpected_token_error error_msg token =
   | None -> Error error_msg
 ;;
 
-(* |> fun _ -> Stdio.print_endline "Done" *)
-
 let rec ignore_whitespace tokens =
   match tokens with
   | [] -> tokens
@@ -160,9 +159,9 @@ let rec parse_import tail' =
 and parse_paren_expression tail' =
   let delim =
     FuncDelim
-      (fun a _ ->
+      (fun a ->
         match a with
-        | Lexer.RParen _ -> true
+        | Lexer.RParen _ :: _ -> true
         | _ -> false)
   in
   match parse_tree delim tail' with
@@ -172,9 +171,9 @@ and parse_paren_expression tail' =
 and parse_brace_expression tail =
   let delim =
     FuncDelim
-      (fun a _ ->
+      (fun a ->
         match a with
-        | Lexer.RBrace _ -> true
+        | Lexer.RBrace _ :: _ -> true
         | _ -> false)
   in
   match rec_parse_tree delim tail [] with
@@ -185,8 +184,8 @@ and parse_record tail properties =
   match ignore_whitespace tail with
   | [] -> Ok (tail, RecordLiteral properties)
   | Lexer.RBrace _ :: _ -> Ok (tail, RecordLiteral properties)
-  | Lexer.Identifier x :: Lexer.Colon _ :: head :: remaining ->
-    match_token head remaining
+  | Lexer.Identifier x :: Lexer.Colon _ :: remaining ->
+    match_token remaining
     |> (fun result ->
          match result with
          | Ok (leftover, y) -> Ok (leftover, (x.value, y) :: properties)
@@ -293,9 +292,9 @@ and parse_type_dec ident tail =
 and parse_array_literal tail =
   let delim =
     FuncDelim
-      (fun a _ ->
+      (fun a ->
         match a with
-        | Lexer.RBracket _ -> true
+        | Lexer.RBracket _ :: _ -> true
         | _ -> false)
   in
   match rec_parse_tree delim tail [] with
@@ -307,7 +306,8 @@ and parse_struct_method_dec tail =
   | Lexer.Identifier x :: remaining ->
     let t = parse_type_literal @@ ignore_whitespace remaining in
     (match t with
-     | Ok (remaining, t) -> Ok (remaining, { name = x.value; type' = t })
+     | Ok (remaining, t) ->
+       Ok (remaining, { name = x.value; type' = t; public = false; mutable' = false })
      | Error e -> Error e)
   | _ -> unexpected_token_error "Invalid token when parsing struct method" @@ List.hd tail
 
@@ -320,12 +320,28 @@ and parse_function_args tail =
       if previous_was_comma
       then unexpected_token_error "Unexpected comma in function args" @@ List.hd tail
       else parse' true tail args
+    | Lexer.Mut _ :: Lexer.Identifier x :: Lexer.Colon _ :: tail ->
+      (match parse_type_literal @@ ignore_whitespace tail with
+       | Ok (remaining, t) ->
+         parse'
+           false
+           remaining
+           (TypedArg { name = x.value; type' = t; public = false; mutable' = true }
+            :: args)
+       | Error e -> Error e)
     | Lexer.Identifier x :: Lexer.Colon _ :: tail ->
       (match parse_type_literal @@ ignore_whitespace tail with
        | Ok (remaining, t) ->
-         parse' false remaining (TypedArg { name = x.value; type' = t } :: args)
+         parse'
+           false
+           remaining
+           (TypedArg { name = x.value; type' = t; public = false; mutable' = false }
+            :: args)
        | Error e -> Error e)
-    | Lexer.Identifier x :: tail -> parse' false tail (Arg { name = x.value } :: args)
+    | Lexer.Mut _ :: Lexer.Identifier x :: tail ->
+      parse' false tail (Arg { name = x.value; public = false; mutable' = true } :: args)
+    | Lexer.Identifier x :: tail ->
+      parse' false tail (Arg { name = x.value; public = false; mutable' = false } :: args)
     | _ ->
       unexpected_token_error "Invalid token when parsing function args" @@ List.hd tail
   in
@@ -366,25 +382,40 @@ and parse_function ?(public = false) tail =
   in
   parse' None tail
 
-and wrap_pub tail =
-  match tail with
-  | head :: tail' ->
-    (match match_token head tail' with
-     | Ok (remaining, x) -> Ok (remaining, PubDeclaration x)
-     | Error e -> Error e)
-  | _ -> Error "Invalid token when parsing pub"
+and unpack_assignment tail left =
+  let head = List.hd tail in
+  let tail' = List.tl tail in
+  match head, tail' with
+  | Some (Lexer.Assign _), Some tail -> Ok (tail, List.rev left)
+  | Some x, Some tail -> unpack_assignment tail (x :: left)
+  | _ -> unexpected_token_error "Invalid unpacking of left-right assignment" head
 
 and parse_let_expression tail =
+  let _ = Stdio.print_endline "" in
+  let _ = List.map ~f:Lexer.show_token_type tail |> List.map ~f:Stdio.print_endline in
   let rec parse_array_destructure tail' args =
     match tail' with
     | Lexer.Identifier x :: Lexer.Comma _ :: remaining ->
       parse_array_destructure
         remaining
         ({ name = x.value; mutable' = false; public = false } :: args)
-    | Lexer.Identifier x :: Lexer.RBracket _ :: remaining ->
+    | Lexer.Identifier x :: Lexer.RBracket _ :: Lexer.Assign _ :: remaining ->
       Ok
         ( remaining
         , ArrayDestructure ({ name = x.value; public = false; mutable' = false } :: args)
+        )
+    | _ -> unexpected_token_error "Invalid destructure" @@ List.hd tail'
+  in
+  let rec parse_tuple_destructre tail' args =
+    match tail with
+    | Lexer.Identifier x :: Lexer.Comma _ :: remaining ->
+      parse_tuple_destructre
+        remaining
+        ({ name = x.value; mutable' = false; public = false } :: args)
+    | Lexer.Identifier x :: Lexer.RParen _ :: remaining ->
+      Ok
+        ( remaining
+        , RecordDestructure ({ name = x.value; public = false; mutable' = false } :: args)
         )
     | _ -> unexpected_token_error "Invalid destructure" @@ List.hd tail'
   in
@@ -394,7 +425,7 @@ and parse_let_expression tail =
       parse_record_destructre
         remaining
         ({ name = x.value; mutable' = false; public = false } :: args)
-    | Lexer.Identifier x :: Lexer.RBrace _ :: remaining ->
+    | Lexer.Identifier x :: Lexer.RBrace _ :: Lexer.Assign _ :: remaining ->
       Ok
         ( remaining
         , RecordDestructure ({ name = x.value; public = false; mutable' = false } :: args)
@@ -405,6 +436,7 @@ and parse_let_expression tail =
     match tail with
     | Lexer.LBrace _ :: tail -> parse_record_destructre tail []
     | Lexer.LBracket _ :: tail -> parse_array_destructure tail []
+    | Lexer.LParen _ :: tail -> parse_tuple_destructre tail []
     | Lexer.Pub _ :: tail -> parse_left ~mutable' ~public:true tail
     | Lexer.Mut _ :: tail -> parse_left ~mutable':true ~public tail
     | Lexer.Identifier x :: Lexer.Colon _ :: tail ->
@@ -412,61 +444,84 @@ and parse_let_expression tail =
        | Ok (remaining, type') ->
          Ok (remaining, TypedIdentifier { name = x.value; type'; mutable'; public })
        | Error e -> Error e)
-    | Lexer.Identifier x :: Lexer.Assign _ :: remaining ->
-      Ok (remaining, Identifier { name = x.value; public; mutable' })
-      |> fun x ->
-      (match x with
-       | Ok (_, _) -> Error ""
-       | Error e -> Error e)
+    | Lexer.Identifier x :: _ -> Ok ([], Identifier { name = x.value; public; mutable' })
+    | _ -> unexpected_token_error "Invalid token when parsing let" @@ List.hd tail
   in
-  Error "Oh No"
+  match unpack_assignment tail [] with
+  | Ok (right, left) ->
+    let _ = Stdio.print_endline "LEFT" in
+    let _ = List.map ~f:Lexer.show_token_type left |> List.map ~f:Stdio.print_endline in
+    let _ = Stdio.print_endline "RIGHT" in
+    let _ = List.map ~f:Lexer.show_token_type right |> List.map ~f:Stdio.print_endline in
+    let parsed_left = parse_left left in
+    let parsed_right = match_token right in
+    (match parsed_left, parsed_right with
+     | Ok (_, left), Ok (remaining', right) -> Ok (remaining', Let { left; right })
+     | Error e, _ -> Error e
+     | _, Error e -> Error e)
+  | Error e -> Error e
 
-and match_token head tail =
-  match head with
-  | Lexer.EOF _ -> Ok (tail, NoOp)
-  | Lexer.Import _ ->
+and parse_identifier token tail =
+  let _ = Stdio.print_endline @@ Lexer.show_token token in
+  match tail with
+  | _ -> Error "Parsing identifier not implemented"
+
+and parse_logic_block tail =
+  let delim =
+    FuncDelim
+      (fun a ->
+        match a with
+        | Lexer.RBrace _ :: _ -> true
+        | _ -> false)
+  in
+  match rec_parse_tree delim tail [] with
+  | Ok (remaining, children) -> Ok (remaining, Block children)
+  | Error e -> Error e
+
+and wrap_pub tail =
+  match match_token tail with
+  | Ok (remaining, x) -> Ok (remaining, PubDeclaration x)
+  | Error e -> Error e
+
+and match_token tail' =
+  match tail' with
+  | Lexer.EOF _ :: tail -> Ok (tail, NoOp)
+  | Lexer.Import _ :: tail ->
     (match parse_import tail with
      | Ok (x, y) -> Ok (x, y)
      | Error e -> Error e)
-  | Lexer.NewLine _ -> Ok (tail, NoOp)
-  | Lexer.LBracket _ ->
+  | Lexer.NewLine _ :: tail -> Ok (tail, NoOp)
+  | Lexer.LBracket _ :: tail ->
     (match parse_array_literal tail with
      | Ok (remaining, node) -> Ok (remaining, node)
      | Error e -> Error e)
-  | Lexer.LParen _ -> parse_paren_expression tail
-  | Lexer.LBrace _ ->
+  | Lexer.LParen _ :: tail -> parse_paren_expression tail
+  | Lexer.LBrace _ :: tail ->
     (match ignore_whitespace tail with
      | Lexer.Identifier _ :: Lexer.Colon _ :: _ ->
        (match parse_record tail [] with
         | _ -> Ok (tail, NoOp))
-     | _ ->
-       let delim =
-         FuncDelim
-           (fun a _ ->
-             match a with
-             | Lexer.RBrace _ -> true
-             | _ -> false)
-       in
-       parse_tree delim tail)
-  | Lexer.Pub _ -> wrap_pub tail
-  | Lexer.Function _ -> parse_function tail
-  | Lexer.Let _ -> parse_let_expression tail
-  | Lexer.TypeKeyword _ ->
+     | _ -> parse_logic_block tail)
+  | Lexer.Pub _ :: tail -> wrap_pub tail
+  | Lexer.Function _ :: tail -> parse_function tail
+  | Lexer.Let _ :: tail -> parse_let_expression tail
+  | Lexer.Identifier x :: tail -> parse_identifier x tail
+  | Lexer.TypeKeyword _ :: tail ->
     (match ignore_whitespace tail with
      | Lexer.Identifier x :: Lexer.Assign _ :: tail -> parse_type_dec x.value @@ tail
-     | _ -> unexpected_token_error "Unmatched Token" @@ Some head)
-  | _ -> unexpected_token_error "Unmatched Token" @@ Some head
+     | _ -> unexpected_token_error "Unmatched Token" @@ List.hd tail)
+  | _ -> unexpected_token_error "Unmatched Token" @@ List.hd tail'
 
 and parse_tree delimiter tokens =
   match delimiter, tokens with
   | _, [] -> Ok (tokens, NoOp)
-  | FuncDelim f, head :: tail when not (f head tokens) -> match_token head tail
-  | NoDelimiter, head :: tail -> match_token head tail
+  | FuncDelim f, tail when not (f tail) -> match_token tail
+  | NoDelimiter, tail -> match_token tail
   | _, _ :: tail -> Ok (tail, NoOp)
 
 and rec_parse_tree delimiter tokens children =
   match delimiter, tokens with
-  | FuncDelim f, head :: _ when not (f head tokens) ->
+  | FuncDelim f, tail when not (f tail) ->
     (match parse_tree delimiter tokens with
      | Ok (remaining, child) -> rec_parse_tree delimiter remaining (child :: children)
      | Error e -> Error e)
