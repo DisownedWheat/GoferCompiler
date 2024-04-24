@@ -210,7 +210,7 @@ and parse_record_type tail properties =
     | _ -> false
   in
   let rec parse' previous_was_comma tail properties =
-    let _ = List.map ~f:show_record_field properties |> List.map ~f:print_endline in
+    List.map ~f:show_record_field properties |> List.map ~f:print_endline |> ignore;
     match ignore_whitespace tail with
     | [] -> Ok (tail, List.rev properties)
     | Lexer.NewLine _ :: remaining -> parse' previous_was_comma remaining properties
@@ -391,8 +391,8 @@ and unpack_assignment tail left =
   | _ -> unexpected_token_error "Invalid unpacking of left-right assignment" head
 
 and parse_let_expression tail =
-  let _ = Stdio.print_endline "" in
-  let _ = List.map ~f:Lexer.show_token_type tail |> List.map ~f:Stdio.print_endline in
+  Stdio.print_endline "";
+  List.map ~f:Lexer.show_token_type tail |> List.map ~f:Stdio.print_endline |> ignore;
   let rec parse_array_destructure tail' args =
     match tail' with
     | Lexer.Identifier x :: Lexer.Comma _ :: remaining ->
@@ -449,10 +449,10 @@ and parse_let_expression tail =
   in
   match unpack_assignment tail [] with
   | Ok (right, left) ->
-    let _ = Stdio.print_endline "LEFT" in
-    let _ = List.map ~f:Lexer.show_token_type left |> List.map ~f:Stdio.print_endline in
-    let _ = Stdio.print_endline "RIGHT" in
-    let _ = List.map ~f:Lexer.show_token_type right |> List.map ~f:Stdio.print_endline in
+    Stdio.print_endline "LEFT";
+    List.map ~f:Lexer.show_token_type left |> List.map ~f:Stdio.print_endline |> ignore;
+    Stdio.print_endline "RIGHT";
+    List.map ~f:Lexer.show_token_type right |> List.map ~f:Stdio.print_endline |> ignore;
     let parsed_left = parse_left left in
     let parsed_right = match_token right in
     (match parsed_left, parsed_right with
@@ -462,7 +462,7 @@ and parse_let_expression tail =
   | Error e -> Error e
 
 and parse_identifier token tail =
-  let _ = Stdio.print_endline @@ Lexer.show_token token in
+  Stdio.print_endline @@ Lexer.show_token token;
   match tail with
   | _ -> Error "Parsing identifier not implemented"
 
@@ -543,7 +543,7 @@ and recursive_parse tokens ast_list =
 ;;
 
 let parse tokens =
-  (* let _ = debug_print_tokens tokens in *)
+  (* debug_print_tokens tokens; *)
   match recursive_parse tokens [] with
   | Error e -> Error e
   | Ok (_, ast) -> Ok (Root ast)
