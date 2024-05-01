@@ -84,6 +84,9 @@ and ast_node =
   | RecordType of record_definition
   | RecordLiteral of record_literal
   | PubDeclaration of ast_node
+  | StringLiteral of string
+  | NumberLiteral of string
+  | PipeExpression of ast_node list
   | NoOp
 [@@deriving show]
 
@@ -106,13 +109,16 @@ let print_ast ast =
       Stdio.print_endline @@ Printf.sprintf "TypeDefinition: %s" x
     | ParenExpression x ->
       Stdio.print_endline @@ Printf.sprintf "ParenExpression: %s" (show_ast_node x)
-    | ArrayLiteral x -> List.map ~f:show_ast_node x |> ignore
+    | ArrayLiteral x -> List.iter ~f:print_ast' x
     | RecordType x ->
       Stdio.print_endline @@ Printf.sprintf "RecordType: %s" (show_record_definition x)
     | RecordLiteral x ->
       Stdio.print_endline @@ Printf.sprintf "RecordLiteral: %s" (show_record_literal x)
     | PubDeclaration x -> print_ast' x
     | NoOp -> Stdio.print_endline "NoOp"
+    | StringLiteral x -> Stdio.print_endline x
+    | NumberLiteral x -> Stdio.print_endline x
+    | PipeExpression x -> List.iter ~f:print_ast' x
   in
   print_ast' ast
 ;;
@@ -465,6 +471,19 @@ and parse_identifier token tail =
   Stdio.print_endline @@ Lexer.show_token token;
   match tail with
   | _ -> Error "Parsing identifier not implemented"
+
+and parse_pipe_expression node tail =
+  let rec parse previous_was_pipe tail' nodes =
+    match previous_was_pipe, tail' with
+    | false, Lexer.Pipe _ :: tail'' -> parse true tail'' nodes
+    | false, _ -> tail', nodes
+    | _ ->
+      (match match_token tail' with
+       | Ok (tail'', new_node) -> parse false tail'' (new_node :: nodes)
+       | Error _ -> tail', nodes)
+  in
+  let tail', nodes = parse false tail [] in
+  tail', Ok (PipeExpression (node :: List.rev nodes))
 
 and parse_logic_block tail =
   let delim =
